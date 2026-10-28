@@ -1,5 +1,18 @@
 # BAYORA — Securing Adversarial AI Safety Testing Infrastructure
 
+
+
+LOGIN PASSWOPRDS---
+ADMIN  ->   username- admin
+             Password-> admin-pass
+RED    -> username - red
+          Password  -> red-pass
+
+
+
+
+
+
 ### Hack in Hills ’26 | Problem Statement 04 | Team SYZYGY
 
 **Securing the Integrity of Adversarial AI Testing**
