@@ -1,0 +1,136 @@
+# --- secrets and local configuration ---------------------------------------
+# The operator-owned runtime configuration. Never commit it.
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# --- Python tooling caches --------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.coverage
+.coverage.*
+coverage.json
+htmlcov/
+coverage.xml
+*.cover
+.tox/
+.nox/
+.hypothesis/
+
+# --- Node / frontend --------------------------------------------------------
+node_modules/
+.pnpm-store/
+.yarn/
+.vite/
+.vitest/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- build and test output --------------------------------------------------
+/dist/
+/build/
+/out/
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+coverage/
+*.log
+logs/
+*.pid
+
+# --- application data --------------------------------------------------------
+# Runtime state: SQLite stores, quarantined artefacts, model weights, audit
+# signing keys, imported datasets.
+data/
+backend/data/
+frontend/data/
+/models/
+/quarantine/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+
+# --- security artefacts ------------------------------------------------------
+# Anything that looks like a live key, secret or exported credential.
+secrets/
+*.secret
+id_rsa
+id_ed25519
+known_hosts
+authorized_keys
+
+# --- editors and OS ----------------------------------------------------------
+.idea/
+.vscode/
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# --- OS / misc ---------------------------------------------------------------
+*.com
+*.exe
+*.dll
+*.so
+*.dylib
+.DS_Store
+
+# --- Alembic -----------------------------------------------------------------
+# Migration *scripts* are committed; local SQLite migration databases are not.
+*.db-journal

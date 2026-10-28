@@ -1,0 +1,1728 @@
+# MASTER BUILD PROMPT — BAYORA + SHADOWPOLICY
+## Hack in Hills ’26 | Problem Statement 04 | Team SYZYGY
+
+## 1. YOUR ROLE AND PRIMARY OBJECTIVE
+
+Act as a senior full-stack engineer, cybersecurity architect, AI safety researcher, DevSecOps engineer, UI/UX designer, and software test engineer working together.
+
+Build a complete, functional, end-to-end web application named **BAYORA — Securing Adversarial AI Safety Testing Infrastructure**, developed by team SYZYGY.
+
+The team members are:
+- Shivanand Rai
+- Tanish Jain
+- Aashish Bodal
+
+The official problem statement is:
+
+**“Securing Adversarial AI Safety Testing Infrastructure.”**
+
+The project must address the fourth problem statement of Hack in Hills ’26. It is not a generic chatbot, a simple LLM wrapper, or just a dashboard displaying simulated statistics. It is a security-testing platform that attempts to isolate adversarial testers, defensive systems, and the target language model while producing verifiable evidence of the evaluation.
+
+Your objective is to implement the frontend, backend, database, model integrations, security controls, audit pipeline, sandbox configuration, evaluation engine, ShadowPolicy module, and testing infrastructure.
+
+**Do not stop after making a plan or generating static UI screens. Build the actual runnable application.** Inspect the current repository first, preserve any useful existing functionality, implement the code, run the available tests, fix errors, and document anything that cannot be fully implemented in the available environment.
+
+Do not invent successful security test results. Do not claim that an isolation boundary is secure merely because a dashboard displays a green status.
+
+---
+
+# 2. THE ACTUAL PROBLEM WE ARE SOLVING
+
+Bayora is an adversarial AI safety-validation platform built around a continuous Red Team → Blue Team → Target LLM → Evaluation loop.
+
+The official challenge describes a shared Docker-based cloud sandbox and identifies four central concerns:
+
+1. Red Team attack payloads must not be observable by Blue Team before a test concludes.
+2. Blue Team defensive logic must not be exposed or inferable by Red Team tooling.
+3. The client LLM must remain clean and uncontaminated throughout the evaluation.
+4. Safety findings must not be invalidated by environmental leakage or cross-tenant interference.
+
+The challenge asks how adversaries, defenders, and a model under test can operate simultaneously without exposing sensitive state or creating exploitable side channels.
+
+Build Bayora to demonstrate a credible proof of concept for these requirements.
+
+## The three principal actors
+
+**Red Team:** Submits adversarial test prompts and attempts to identify weaknesses in the model and its surrounding defenses. It should receive only the responses and test information explicitly permitted by the evaluation protocol.
+
+**Blue Team:** Configures defensive rules, input filters, output validation, policy enforcement, and other countermeasures. Its private configurations must not be readable through Red Team interfaces or APIs.
+
+**Target LLM:** The client-provided language model being evaluated. Its model version, configuration, session context, and stored state must be protected from unauthorized modification or cross-session contamination.
+
+## The supporting components
+
+- **Bayora Controller:** Coordinates evaluation sessions and mediates all approved communication.
+- **Policy Engine:** Applies input and output defenses.
+- **Model Gateway:** Provides a controlled interface to an approved target model.
+- **ShadowPolicy Evaluator:** Measures whether an attacker can infer confidential policy information from observable behavior.
+- **Audit Collector:** Receives security events and verifies their integrity.
+- **Observability Engine:** Detects suspicious access, policy violations, network attempts, and resource anomalies.
+- **Evaluation and Reporting Engine:** Scores test outcomes, calculates metrics, and produces reproducible reports.
+
+Treat this as a security engineering project with explicit trust boundaries, not just a functional AI application.
+
+---
+
+# 3. PRODUCT VISION AND DIFFERENTIATION
+
+The main product is Bayora. ShadowPolicy is a distinctive proposed evaluation module within Bayora, not the entire product.
+
+## Bayora's core value
+
+Bayora lets organizations evaluate a language model and its safeguards in a controlled adversarial environment.
+
+It should help answer:
+
+- Can the target model be manipulated through adversarial prompts?
+- Can the defenses prevent or detect unsafe outputs?
+- Can Red Team discover information about Blue Team's hidden policies?
+- Can one evaluation session contaminate another?
+- Can a team access resources outside its permissions?
+- Can the security team reconstruct what occurred from the audit trail?
+- Are the measured outcomes repeatable and reliable?
+- What risks remain even after the defenses are enabled?
+
+## ShadowPolicy: the proposed differentiating feature
+
+Implement **ShadowPolicy — Blind Policy-Leakage Evaluation**.
+
+ShadowPolicy investigates whether Red Team can infer hidden defense configuration from permitted observations without directly accessing the defensive configuration.
+
+For example, a defensive service may apply a secret rule to certain categories of request. Red Team can see whether a request is accepted, rejected, rewritten, or returned with an error. Differences in response content, status, or timing may reveal information about the hidden policy.
+
+ShadowPolicy must:
+
+1. Create a test round with hidden synthetic policy facts.
+2. Commit cryptographically to the policy set before Red Team begins.
+3. Allow Red to submit a limited number of controlled probes.
+4. Expose only the observations permitted by the round configuration.
+5. Allow Red to submit and lock its guesses.
+6. Prevent disclosure of the hidden ground truth before the round is finalized.
+7. Reveal the ground truth to an authorized evaluator after the round ends.
+8. Verify the initial commitment against the revealed policy set.
+9. Calculate policy-inference and response-leakage metrics.
+10. Compare results before and after Blue enables mitigations.
+
+The purpose is to measure the inferability of hidden policies, not to claim that a particular feature has never existed elsewhere.
+
+All initial policies should be synthetic demonstration policies, not real credentials, commercial secrets, or dangerous infrastructure details.
+
+The application must distinguish policy information that is intentionally revealed after a completed round from information that leaks prematurely during testing.
+
+---
+
+# 4. REQUIRED TECHNOLOGY STACK
+
+Use a modern, maintainable stack.
+
+## Frontend
+
+- React
+- TypeScript
+- Vite
+- Tailwind CSS
+- React Router
+- TanStack Query or an equivalent data-fetching library
+- React Hook Form and Zod for forms and schema validation
+- Recharts for evaluation metrics
+- Lucide icons
+- Native browser APIs for secure downloads, clipboard actions, and file selection where appropriate
+
+Use a consistent component system. shadcn/ui may be used where compatible, but avoid unnecessary dependencies.
+
+## Backend
+
+- Python 3.12 or another compatible Python version available in the environment
+- FastAPI
+- Pydantic
+- SQLAlchemy
+- Alembic database migrations
+- PostgreSQL for persistent application data
+- Pytest for backend tests
+- Structured JSON logging
+
+If PostgreSQL cannot be started in the local development environment, provide a documented lightweight development mode without silently removing database or authorization features.
+
+## Model integrations
+
+Implement a model adapter interface with:
+
+1. **Mock model:** Available immediately and deterministic enough for repeatable demonstrations.
+2. **Ollama adapter:** Supports calling a locally hosted LLM through its official local API.
+3. **OpenAI-compatible adapter:** Optional and disabled by default, requiring explicit configuration and user consent before external prompts can be transmitted.
+4. **Model registry:** Stores metadata, connection configuration, model version, and validation status.
+
+Do not expose provider credentials in the frontend or store long-lived API keys inside model prompts.
+
+The mock model must be explicitly labelled as simulated. Never present a mock response as a real LLM evaluation.
+
+## Infrastructure
+
+- Docker
+- Docker Compose
+- Separate service containers
+- Rootless execution wherever supported
+- Restricted networks
+- Non-root users
+- Read-only filesystems where possible
+- Dropped Linux capabilities
+- `no-new-privileges`
+- seccomp profiles
+- Linux namespaces and cgroups where supported
+- Optional gVisor runtime integration when available
+- Independent audit storage and verification
+
+The prototype must run on standard development or cloud infrastructure. Do not require proprietary hardware.
+
+---
+
+# 5. SYSTEM ARCHITECTURE
+
+Design the application with clear services and communication boundaries.
+
+The logical architecture is:
+
+```text
+                  WEB FRONTEND
+                       |
+                  API GATEWAY
+                       |
+                BAYORA CONTROLLER
+                       |
+          +------------+-------------+
+          |            |             |
+          v            v             v
+     RED SERVICE   BLUE POLICY   MODEL GATEWAY
+          |            |             |
+          +------------+-------------+
+                       |
+               EVALUATION ENGINE
+                       |
+                AUDIT COLLECTOR
+                       |
+                 REPORTING API
+```
+
+This is a logical diagram, not permission to place every component in one trusted process.
+
+The actual Docker deployment must have explicitly defined service networks and backend authorization.
+
+## Required services
+
+Create separate deployable services for:
+
+- `frontend`
+- `api-controller`
+- `red-service`
+- `blue-policy-service`
+- `model-gateway`
+- `evaluation-service`
+- `audit-collector`
+- `postgres`
+- Optional local LLM service, such as Ollama
+
+Keep the audit collector and private evaluation state inaccessible to ordinary Red Team and Blue Team requests except through specifically authorized result endpoints.
+
+The model must not be reachable through an unrestricted public port.
+
+Only the controller should orchestrate cross-service communication through approved endpoints. Red and Blue must not communicate directly with one another.
+
+The controller must verify authorization on every sensitive API request.
+
+## Service responsibilities
+
+### Frontend
+
+Renders the role-specific UI, collects user input, displays test progress, and presents authorized results.
+
+It must not contain secret policy definitions, private signing keys, model provider credentials, or server-side access tokens.
+
+### Controller
+
+- Authenticates users.
+- Applies role-based access control.
+- Creates and manages test sessions.
+- Assigns unique test and trace IDs.
+- Routes approved requests to the correct services.
+- Records lifecycle events.
+- Checks that each request belongs to an authorized session.
+- Prevents cross-session data access.
+- Coordinates completion and finalization.
+- Exposes status and health endpoints without leaking secrets.
+
+### Red Service
+
+- Accepts adversarial testing instructions.
+- Provides a test workbench.
+- Submits probes through the controller.
+- Tracks its own allowed requests and results.
+- Enforces probe quotas and request size limits.
+- Cannot inspect Blue Team code, private policy files, audit storage, model weights, or hidden evaluation state.
+
+### Blue Policy Service
+
+- Stores versioned defense rules.
+- Applies input validation and prompt-injection checks.
+- Runs output validation.
+- Supports configurable response normalization.
+- Records detection and mitigation decisions.
+- Exposes safe operational summaries to authorized Blue Team members.
+- Never exposes private policy definitions through Red Team endpoints.
+
+### Model Gateway
+
+- Supports registered model adapters.
+- Attaches a stable evaluation ID and model version to each execution.
+- Ensures that test sessions receive isolated context.
+- Enforces maximum input/output sizes and request timeouts.
+- Forwards approved requests only.
+- Does not permit arbitrary shell commands, tools, or network actions from generated model output.
+- Records model errors and execution metrics.
+
+### Evaluation Service
+
+- Executes test suites.
+- Correlates outcomes with the target model and defense versions.
+- Calculates metrics from recorded results.
+- Separates direct model vulnerabilities from infrastructure failures.
+- Generates reports with clear evidence references.
+
+### Audit Collector
+
+- Receives structured security events.
+- Assigns sequence numbers and trusted timestamps.
+- Calculates a chained hash for each event.
+- Periodically verifies hash integrity.
+- Produces signed checkpoints if signing keys can be kept outside the tenant services.
+- Does not expose arbitrary update or delete APIs to Red or Blue.
+- Produces an integrity status and identifies verification failures.
+
+Do not describe a hash-chained file as truly immutable. Use the terms “tamper-evident” and “integrity-verifiable” unless independent storage controls and administrative boundaries actually support a stronger claim.
+
+---
+
+# 6. FRONTEND: BUILD EVERY REQUIRED SCREEN
+
+Create a polished, responsive, professional cybersecurity interface.
+
+## Visual design
+
+Use a sophisticated dark security-lab aesthetic.
+
+Suggested palette:
+
+- Dark navy background: `#0B1020`
+- Elevated surfaces: `#141C2E`
+- Cyan primary accent: `#44D7F2`
+- Blue Team accent: `#5599FF`
+- Red Team accent: `#FF626F`
+- Emerald success: `#52D6A0`
+- Amber warning: `#F1BF62`
+- Neutral text: `#E5EAF2`
+
+Use subtle borders, restrained glows, readable typography, consistent spacing, and accessible contrast.
+
+Avoid an overcrowded neon style. The UI should feel like a professional security product rather than a gaming website.
+
+Branding:
+
+**BAYORA**  
+*Securing the Integrity of Adversarial AI Testing*
+
+Show “Developed by SYZYGY” in the appropriate footer or About page.
+
+Use interactive charts, status indicators, and a real architecture/network diagram. Do not use decorative charts containing fabricated statistics.
+
+## Screen A: Login
+
+Build a login screen with:
+
+- BAYORA brand identity.
+- Email or username.
+- Password.
+- Login button.
+- Validation and error messages.
+- Loading indicator.
+- Session logout.
+- A demo-environment notice.
+
+Seed development demo accounts for Admin, Red Team, Blue Team, and Auditor. Keep initial passwords in environment configuration or another development-only mechanism. Do not ship production credentials in the frontend bundle.
+
+## Screen B: Main dashboard
+
+Display:
+
+- Total evaluation sessions.
+- Running, completed, and failed test counts.
+- Attack cases executed.
+- Detection/blocking results.
+- Output leakage detections.
+- ShadowPolicy inference score.
+- Audit integrity verification status.
+- Resource usage.
+- Average and P95 evaluation latency where measurable.
+- Recent security events.
+- Failed authorization attempts.
+- Current model and defense versions.
+- An architecture diagram showing permitted communication paths.
+
+All values must come from actual application data. When only simulated tests are available, visibly label the metrics as simulated.
+
+## Screen C: Evaluation creation wizard
+
+Provide a multi-step form:
+
+1. Select a registered target model.
+2. Choose a model adapter.
+3. Select a test suite.
+4. Choose the Blue Team defense version.
+5. Select the type of evaluation.
+6. Configure a bounded probe/test budget.
+7. Review isolation and network status.
+8. Confirm and start evaluation.
+
+Validate every field on both frontend and backend.
+
+Allow safe test scenarios such as:
+
+- Direct prompt override attempts.
+- Indirect prompt-injection simulations.
+- Sensitive-data disclosure checks using synthetic secrets.
+- Policy bypass attempts using harmless test fixtures.
+- Output validation checks.
+- Cross-session contamination checks.
+- Unauthorized resource access checks.
+- ShadowPolicy black-box inference tests.
+
+Do not automatically run unbounded attack traffic.
+
+## Screen D: Red Team workbench
+
+The Red Team interface should include:
+
+- Active evaluation ID.
+- Registered target model and version.
+- Prompt submission field.
+- Test-case selector.
+- Probe count and remaining budget.
+- Submit-probe action.
+- Response display.
+- HTTP/status classification where appropriate.
+- Model response versus defense decision.
+- Safe security finding summary.
+- Request latency.
+- Probe history.
+- Test completion status.
+
+Do not expose private Blue Team filters, thresholds, policy files, model secrets, or future scheduled attack cases.
+
+Do not return unredacted private evaluator data.
+
+## Screen E: Blue Team console
+
+Provide:
+
+- Private policy configuration.
+- Versioned defense profiles.
+- Input and output inspection rules.
+- Detection settings.
+- Response normalization toggle.
+- Safe logging configuration.
+- Model-output canary checks using synthetic test markers.
+- Policy change history.
+- Defense test results.
+- Blocked, rewritten, and allowed request counts.
+- False-positive and false-negative measurements where ground truth is available.
+- Defense deployment status.
+
+A Blue Team policy update should create a new immutable version record rather than silently overwriting the prior configuration.
+
+The private API that retrieves full policy definitions must require Blue Team authorization.
+
+Red Team must not be able to toggle, retrieve, update, or delete those configurations.
+
+## Screen F: ShadowPolicy lab
+
+This is a first-class feature, not a minor settings panel.
+
+Include the following views:
+
+### Round setup
+
+- Round name.
+- Model selection.
+- Blue defense version.
+- Hidden policy set.
+- Number of hidden facts.
+- Probe budget.
+- Round timeout.
+- Response-observation mode.
+- Whether the round is using a simulated policy service or a real model-backed experiment.
+
+### Red observation console
+
+Red sees:
+
+- Round status.
+- Allowed probe input.
+- Observable response.
+- Response classification.
+- Latency observation, when measured.
+- Remaining probe budget.
+- Its own submitted probes.
+
+Red must not see:
+
+- Ground-truth policies.
+- Policy IDs that reveal the answer.
+- Private evaluator explanations.
+- Blue's configuration or defense code.
+- The unrevealed commitment nonce.
+- Other tenants' tests.
+
+### Blue mitigation console
+
+Blue can:
+
+- Review its private policy configuration.
+- Enable or disable response normalization.
+- Configure safe rejection-message behavior.
+- Change selected defensive rules.
+- Create a new policy version.
+- Start a controlled before/after comparison.
+
+### Guess submission
+
+Red must provide guesses through a controlled schema. The server must lock them when the round is submitted, preventing edits after the ground truth is revealed.
+
+### Final report
+
+After a round is finalized, show:
+
+- Correct policy inferences.
+- Incorrect guesses.
+- Precision.
+- Recall-style inference coverage.
+- Number of direct disclosures.
+- Number of policy-related response distinctions.
+- Probe count.
+- Measured latency statistics.
+- Commitment verification status.
+- Before/after defense comparison.
+- A statement of the experiment's limitations.
+
+Never reveal hidden policy ground truth to Red during the round.
+
+## Screen G: Model registry
+
+Allow authorized administrators to register and manage supported target models.
+
+Support these methods:
+
+1. Register the built-in mock model.
+2. Register an Ollama model identifier available in the configured model environment.
+3. Configure an optional OpenAI-compatible endpoint, disabled until an authorized administrator enables it.
+4. Submit a Hugging Face repository ID for controlled import.
+5. Upload supported model files into quarantine storage.
+
+For every model, store:
+
+- Display name.
+- Model adapter.
+- Model identifier or repository ID.
+- Version/revision where available.
+- File hashes when applicable.
+- Source.
+- Format and architecture.
+- Estimated resource requirements if available.
+- Status.
+- Validation result.
+- Runtime version.
+- Created timestamp.
+- Last health-check timestamp.
+- Whether execution is simulated, local, or externally hosted.
+
+### Safe model import
+
+Direct uploads must be staged and validated before use.
+
+Implement:
+
+- Streaming uploads.
+- Configurable file-size limits.
+- Archive path traversal protection.
+- File type validation.
+- SHA-256 file hashing.
+- Storage outside publicly served directories.
+- Model format and architecture validation.
+- Restricted quarantine storage.
+- Explicit approval before model activation.
+- Rejection of unsupported formats.
+- No automatic execution of custom model code.
+- No loading of unsafe Python-pickle-based model files.
+- A supported safe tensor format such as Safetensors where compatible.
+
+Never allow an uploaded model package to execute with the controller's permissions.
+
+Model loading must happen only through the approved, restricted model runtime. If a file format cannot be safely supported within the prototype, quarantine it and explain the limitation rather than pretending the model was loaded.
+
+For external endpoints, protect against SSRF, enforce address and scheme validation, use explicit egress policies, and avoid sending data outside the environment without informed approval.
+
+## Screen H: Audit explorer
+
+Display:
+
+- Event ID and sequence number.
+- Timestamp.
+- Session and trace IDs.
+- Actor/service.
+- Event category.
+- Redacted summary.
+- Previous hash.
+- Current hash.
+- Verification status.
+
+Filters:
+
+- Date range.
+- Actor.
+- Session.
+- Event category.
+- Severity.
+- Verification status.
+
+Allow authorized auditors to:
+
+- View events.
+- Verify an entire chain.
+- Inspect a detected gap or mismatch.
+- Export a report.
+- Verify a signed checkpoint when supported.
+
+Do not provide normal UI controls that overwrite or delete audit events.
+
+## Screen I: Security findings and reports
+
+Create a detailed evaluation report with:
+
+- Executive summary.
+- Target model and version.
+- Defense version.
+- Evaluation date and configuration.
+- Test-suite details.
+- Passed and failed checks.
+- Attack detection rate.
+- False-positive rate.
+- False-negative rate.
+- Output disclosure results.
+- ShadowPolicy metrics.
+- Audit integrity status.
+- Isolation check results.
+- Latency statistics.
+- Resource usage.
+- Evidence references.
+- Severity and confidence.
+- Residual-risk description.
+- Remediation recommendations.
+- Export to JSON and a formatted PDF if the environment supports it.
+
+Distinguish between observed evidence, inferred conclusions, and untested assumptions.
+
+## Screen J: Isolation and observability center
+
+Show the service topology and permitted network flows.
+
+Include checks for:
+
+- Service health.
+- Unexpected service exposure.
+- Attempted unauthorized service connections.
+- Forbidden filesystem access attempts where observable.
+- Authorization denials.
+- Model version mismatches.
+- Resource quota breaches.
+- Cross-session contamination canaries.
+- Audit integrity problems.
+- Unexpected external connection attempts.
+
+For every check, record the method, timestamp, result, and evidence.
+
+The UI must distinguish between:
+
+- Verified successful enforcement.
+- A configured control that has not been tested.
+- A simulated demonstration.
+- Unsupported or unavailable telemetry.
+- A failed control.
+
+Do not mark a control “secure” only because its configuration file exists.
+
+## Screen K: Threat model and residual risk
+
+Provide a page documenting:
+
+- Assets.
+- Trust boundaries.
+- Threat actors.
+- Entry points.
+- Security assumptions.
+- Implemented controls.
+- Verified controls.
+- Partially implemented controls.
+- Known limitations.
+- Residual risks.
+- Recommended future work.
+
+This is required, not optional.
+
+## Screen L: Settings and team information
+
+Include:
+
+- Service settings visible to authorized administrators.
+- User and role management.
+- Model adapter configuration.
+- Evaluation defaults.
+- Audit settings.
+- Deployment status.
+- Team name: SYZYGY.
+- Team members: Shivanand Rai, Tanish Jain, Aashish Bodal.
+
+Do not expose secrets, environment values, or private keys through settings endpoints.
+
+---
+
+# 7. SHADOWPOLICY IMPLEMENTATION DETAILS
+
+Implement the first version as an explicit, measurable black-box experiment.
+
+## Hidden policy facts
+
+Use a configurable library of synthetic policy categories. For example:
+
+- A synthetic project identifier is confidential.
+- A defined category of synthetic data requires redaction.
+- A particular test marker must not appear in output.
+- A synthetic tool is not permitted.
+- A specific class of request receives normalized rejection.
+- Session context must not cross between test IDs.
+- A defined synthetic data class requires output inspection.
+- A particular safe test fixture is allowed.
+
+These are examples, not production secrets.
+
+At the beginning of each round:
+
+1. Select the relevant policy facts from the configured test set.
+2. Canonicalize the policy representation.
+3. Generate a strong random nonce.
+4. Calculate a SHA-256 commitment over the canonical representation and nonce.
+5. Store the ground truth and nonce in evaluator-only storage.
+6. Expose the commitment and non-sensitive round metadata to the participants.
+
+Document the exact commitment encoding so verification is reproducible. Use an unambiguous canonical representation and prevent the nonce from reaching Red before finalization.
+
+## Probe processing
+
+Red submits a probe to the controller. The controller verifies the session and role, checks the remaining budget, creates an event ID, and sends the request through the permitted pipeline.
+
+The observation service returns only allowed information.
+
+The policy evaluator privately tracks:
+
+- What the hidden policy would do.
+- What response was actually observable.
+- Whether the observation exposes an unintended distinction.
+- Whether the response violates the configured policy.
+- Whether the event belongs to the correct round.
+
+Ensure the evaluator does not accidentally include hidden ground truth in its response payload or logs that Red can access.
+
+## Two response modes
+
+Implement:
+
+**Diagnostic mode:** Allows a controlled set of differentiated synthetic responses to help demonstrate response-based policy inference.
+
+**Normalized mode:** Uses a common safe response for designated rejection classes, reducing unnecessary policy-specific detail.
+
+Do not simply append random noise and claim side channels are solved. If latency timing is measured, collect real measurements, use sufficient repetitions, and document environmental noise and statistical limitations.
+
+## Guess locking and evaluation
+
+Red submits structured guesses and locks them before finalization.
+
+After the round is closed, an authorized evaluator compares the guesses against the ground truth.
+
+At minimum, calculate:
+
+- True positive policy guesses.
+- False positive policy guesses.
+- False negative policy guesses.
+- Precision.
+- Recall.
+- Inference coverage.
+- Direct policy disclosures.
+- Number of probes.
+- Observation leakage counts.
+- P50 and P95 latency where sample size permits.
+
+Use clearly documented formulas.
+
+For example:
+
+`Inference coverage = correctly inferred hidden facts / total hidden facts`
+
+`Precision = correct inferred facts / all submitted positive guesses`
+
+`Recall = correct inferred facts / all hidden facts that were successfully represented as inferable targets`
+
+Handle divisions by zero explicitly.
+
+A composite leakage score may be included only if its component weights and formula are documented. Always display component metrics alongside the aggregate score.
+
+## Before-and-after analysis
+
+Run comparable evaluation rounds under different Blue configurations.
+
+The report should compare:
+
+- Number of facts inferred.
+- Probe success rate.
+- Response distinctions.
+- Direct disclosure incidents.
+- Latency distributions.
+- False-positive and false-negative rates.
+
+Record the model version, defense version, policy seed/commitment, and test-set version.
+
+Do not compare unrelated rounds and call the result a controlled experiment.
+
+## Important limitation
+
+ShadowPolicy does not prove that all hidden information is impossible to infer. It measures leakage under the selected observation model, probe budget, test dataset, model, and environment.
+
+Make that limitation visible in the application and exported report.
+
+---
+
+# 8. RED TEAM TESTING ENGINE
+
+Build a safe, repeatable evaluation pipeline.
+
+Every test case should have:
+
+- Test ID.
+- Test category.
+- Input fixture.
+- Expected policy outcome.
+- Severity.
+- Test-suite version.
+- Model version.
+- Defense version.
+- Actual outcome.
+- Evidence reference.
+- Timestamp.
+
+Implement a starter library of harmless, deterministic test cases to verify the end-to-end workflow.
+
+The test framework should support these categories:
+
+1. Direct prompt override attempts.
+2. Indirect prompt-injection simulations.
+3. Sensitive-information disclosure using synthetic secrets.
+4. Output validation.
+5. Tool permission checks.
+6. Policy bypass tests.
+7. Cross-session contamination.
+8. Resource consumption limits.
+9. Unauthorized endpoint access.
+10. Network boundary verification.
+11. Model configuration integrity.
+12. Audit integrity.
+
+Never use actual credentials or real customer secrets in the demo.
+
+## Dataset support
+
+Provide a dataset-management interface and optional import adapters for the challenge's suggested resources:
+
+- AdvBench: https://github.com/llm-attacks/llm-attacks
+- JailbreakBench: https://jailbreakbench.github.io
+- HarmBench: https://www.harmbench.org
+- ToxiGen: https://github.com/microsoft/ToxiGen
+- Gandalf/Lakera red-teaming dataset: https://huggingface.co/datasets/Lakera/gandalf_ignore_instructions
+- NVD/CVE Database: https://nvd.nist.gov/vuln/search
+- DARPA Transparent Computing/provenance resources: https://github.com/darpa-i2o/Transparent-Computing
+- Anthropic HH-RLHF: https://huggingface.co/datasets/Anthropic/hh-rlhf
+
+These are optional external resources, not a requirement to download all datasets on startup.
+
+Initially, ship a small synthetic dataset and demonstrate the full import/validation workflow. For external datasets, preserve source attribution, license and use restrictions, dataset version, and provenance. Never claim that an external dataset has been integrated unless its importer is functional and has been tested.
+
+Keep dangerous or sensitive raw content out of the default public demo interface. Provide safe previews and controlled test execution.
+
+---
+
+# 9. BLUE TEAM DEFENSE PIPELINE
+
+Implement a layered defensive pipeline.
+
+## Stage 1: Input validation
+
+- Enforce request size limits.
+- Validate data types and schemas.
+- Reject malformed requests.
+- Check rate limits and session authorization.
+- Detect known synthetic test markers.
+- Apply configurable prompt-injection heuristics.
+- Record whether the request was allowed, transformed, or blocked.
+
+## Stage 2: Policy evaluation
+
+Use explicit policy identifiers and versioned rules.
+
+For each decision, store:
+
+- Policy version.
+- Decision category.
+- Decision outcome.
+- Non-sensitive explanation code.
+- Trace ID.
+
+Only Blue and authorized auditors may access the detailed private policy definition.
+
+## Stage 3: Model request
+
+Forward only approved input to the model gateway.
+
+Do not attach private backend credentials to model prompts. Do not pass privileged tool capabilities to the model unless they are intentionally part of a separate, restricted evaluation.
+
+## Stage 4: Output validation
+
+- Inspect responses for synthetic canary strings.
+- Check for configured sensitive patterns.
+- Apply output policy rules.
+- Prevent disallowed content from reaching Red when detected.
+- Record whether an output was allowed, redacted, transformed, or blocked.
+
+The prototype's simple pattern-based detector must be labelled as limited. Never claim comprehensive PII detection, reliable jailbreak defense, or complete secret prevention unless those capabilities have been independently demonstrated.
+
+## Stage 5: Evaluation record
+
+Combine the model result and policy decisions into a structured record, calculate metrics, and append the corresponding audit events.
+
+A blocked output must not disappear from the audit trail merely because Red never received it.
+
+---
+
+# 10. SANDBOX ISOLATION AND NETWORK SECURITY
+
+Treat this section as one of the most important requirements in the implementation.
+
+## Docker Compose architecture
+
+Create a working `compose.yaml` with service definitions and clearly documented networks.
+
+Create separate network segments for:
+
+- Public frontend/API ingress.
+- Red service communication.
+- Blue policy communication.
+- Model communication.
+- Evaluation service communication.
+- Audit collector communication.
+
+Use internal Docker networks wherever possible.
+
+Red must not connect directly to Blue or the model. Blue must not connect directly to Red. The model must not be exposed publicly. Cross-service requests must travel through explicitly allowed endpoints.
+
+The controller may join multiple internal networks to mediate requests, but that makes it a high-trust component. Document this fact and minimize its permissions.
+
+Do not rely on frontend hiding or different URL paths as the security boundary.
+
+## Container hardening
+
+Apply the relevant controls to each service, based on what it actually needs:
+
+- Non-root user.
+- `cap_drop: [ALL]` where compatible.
+- `no-new-privileges:true`.
+- Read-only root filesystem where possible.
+- Restricted writable temporary storage.
+- No privileged containers.
+- No Docker socket mounts.
+- No host networking.
+- No unnecessary bind mounts.
+- Configurable CPU and memory limits.
+- Process-count limits where supported.
+- Seccomp restrictions.
+- Minimal images and dependencies.
+- Health checks.
+- Explicit exposed and published ports.
+
+Generate a restricted seccomp profile only when its syscall requirements have been validated for that service. Do not create a profile that makes the service fail and then mark the control as complete.
+
+Use separate Linux namespaces and cgroups when available. Where the runtime supports gVisor, document how to enable it. Do not make gVisor mandatory for every developer machine.
+
+Because container configuration support differs across Linux, Windows, macOS, Docker Desktop, and cloud platforms, document the effective controls and unsupported settings. Never claim that a setting enforces kernel isolation if it is ignored by the runtime.
+
+## Network egress
+
+Default to denying unnecessary outbound traffic.
+
+The model, Red service, and Blue service must not have arbitrary Internet access.
+
+If external model imports or telemetry require network access, route those operations through a separately restricted import/proxy service with explicit destination allowlists.
+
+Do not give the model gateway unrestricted Internet access just to simplify model downloading.
+
+## Session and cache isolation
+
+- Use a unique identifier for every session.
+- Do not share conversation history across sessions.
+- Do not mutate the target model as part of an ordinary evaluation.
+- Pin the model and defense version for a test.
+- Use isolated context and storage for each session.
+- Ensure cleanup happens when an evaluation finishes.
+- Disable cross-session prefix/KV caching where the serving runtime supports it and where needed for the threat model.
+- Record when a cache-related safeguard is unsupported or unverified.
+
+Implement a cross-session synthetic-canary test: insert a unique marker in one test session, then check whether an unrelated session can retrieve it. Label this as a test of observed cross-session contamination, not as proof against every KV-cache or hardware side channel.
+
+---
+
+# 11. ACCESS CONTROL AND SECRETS MANAGEMENT
+
+Use backend-enforced role-based access control.
+
+Minimum roles:
+
+### Administrator
+
+Manages accounts, models, environment settings, and authorized global configuration.
+
+### Red Team
+
+Creates and executes approved tests, sees its own requests and permitted results, and submits ShadowPolicy guesses.
+
+### Blue Team
+
+Manages private defense settings, reviews policy decisions, and compares mitigation results.
+
+### Auditor
+
+Views authorized audit events, evaluates integrity, and reviews finalized reports.
+
+Do not rely on frontend route guards alone. Every endpoint must verify the user, role, resource ownership, session state, and allowed action.
+
+Use secure cookie/session configuration or an appropriately configured token mechanism. Avoid placing long-lived privileged tokens in browser local storage.
+
+Protect secrets by:
+
+- Keeping provider credentials server-side.
+- Keeping keys out of source control.
+- Providing `.env.example` with placeholder values only.
+- Redacting secrets from logs.
+- Using separate service credentials.
+- Restricting filesystem permissions.
+- Separating audit-signing keys from Red and Blue.
+- Using short-lived credentials where a suitable mechanism exists.
+- Never exposing environment-variable dumps through health endpoints.
+
+Implement authorization tests that attempt to read Blue configuration through Red credentials, modify a model through Red credentials, and overwrite audit data through ordinary tenant credentials. Each forbidden operation must fail and create an appropriate security event without leaking the protected information.
+
+---
+
+# 12. AUDIT TRAILS AND FORENSIC PROVENANCE
+
+Every evaluation must have a reconstructable chain of events.
+
+Log, as appropriate:
+
+- Evaluation creation.
+- Participant identity and role.
+- Model registration and version.
+- Defense version.
+- Prompt submission.
+- Input policy decisions.
+- Model request and completion metadata.
+- Output policy decisions.
+- Tool calls, if any are enabled.
+- Network access attempts and denials.
+- Filesystem access denials where observable.
+- Resource limit events.
+- ShadowPolicy probe and finalization.
+- Audit verification.
+- Authorization failures.
+- Session cleanup.
+
+Each event should include:
+
+- Event ID.
+- Sequence number.
+- UTC timestamp.
+- Actor/service ID.
+- Event type.
+- Evaluation and session ID.
+- Trace ID.
+- Redacted or access-controlled payload reference.
+- Previous event hash.
+- Current event hash.
+
+Use a canonical serialization format before hashing.
+
+Implement:
+
+`current_hash = SHA256(canonical_event_without_hashes + previous_hash)`
+
+Document the exact encoding and ensure that verification uses exactly the same encoding.
+
+Use append-only event interfaces and separate audit storage permissions. Add periodic verification and identify sequence gaps or hash mismatches.
+
+If a signing key can be securely isolated, add signed integrity checkpoints. Do not keep signing keys inside the same writable event store.
+
+Raw prompt text may contain sensitive information. The default demo should use synthetic inputs and safe redaction. If full-content retention is necessary for a specific controlled experiment, make retention and access policy explicit.
+
+Provide a report export with event IDs and integrity-verification status. The export must distinguish verifiable facts from application-generated summaries.
+
+---
+
+# 13. RESOURCE GOVERNANCE AND FAIRNESS
+
+The challenge explicitly requires resource control so that CPU, memory, I/O, and timing differences do not invalidate evaluation findings or create exploitable side channels.
+
+Implement:
+
+- Per-session request budgets.
+- Request timeout controls.
+- Configurable concurrency limits.
+- Maximum prompt size.
+- Maximum generated output size.
+- CPU/memory limits for appropriate services.
+- Process-count and request-rate limits.
+- Evaluation queue visibility.
+- Resource usage tracking where available.
+- Timeout and resource exhaustion events.
+- A controlled comparison of latency across test modes.
+
+Record whether metrics are measured from the runtime, estimated, or simulated.
+
+Do not compare model accuracy or policy quality without considering whether requests were rejected because of infrastructure overload.
+
+Keep a distinction between:
+
+- Security policy denial.
+- Model refusal.
+- Model-serving error.
+- Timeout.
+- Resource-limit event.
+- Network failure.
+- Test harness error.
+
+Do not treat these outcomes as interchangeable.
+
+---
+
+# 14. OBSERVABILITY AND ANOMALY DETECTION
+
+Build an event-based monitoring layer.
+
+It should detect or record:
+
+- Unexpected attempts to contact forbidden services.
+- Unusual rates of failed authorization.
+- Repeated requests beyond the probe budget.
+- Attempts to access secret configuration.
+- Model version changes during an evaluation.
+- Audit hash verification failures.
+- Resource quota breaches.
+- Suspicious cross-session marker matches.
+- Unexpected external egress.
+- Attempts to access forbidden files where monitoring supports it.
+- Changes to critical service configuration.
+
+Provide severity categories such as Informational, Warning, High, and Critical, with documented rules.
+
+The monitoring system must not reveal Blue's private rule content to Red. Provide generic public-facing denials and a separate authorized audit explanation.
+
+Do not label every unusual event as a confirmed attack. Use “suspicious event” or “possible policy violation” unless the evidence supports a stronger classification.
+
+---
+
+# 15. DATA MODEL AND DATABASE DESIGN
+
+Implement proper database models and migrations.
+
+At minimum, create the following entities:
+
+- `User`
+- `Role`
+- `ModelRegistryEntry`
+- `ModelVersion`
+- `EvaluationSession`
+- `TestSuite`
+- `TestCase`
+- `TestExecution`
+- `PromptArtifact`
+- `DefensePolicy`
+- `DefensePolicyVersion`
+- `PolicyDecision`
+- `SecurityFinding`
+- `AuditEvent`
+- `AuditCheckpoint`
+- `ShadowPolicyRound`
+- `ShadowPolicyFact`
+- `ShadowPolicyProbe`
+- `ShadowPolicyGuess`
+- `IsolationCheck`
+- `ResourceMetric`
+- `DatasetSource`
+- `DatasetImportJob`
+
+Use foreign keys, indexes, timestamps, constraints, and cascading rules deliberately.
+
+Protect tenant-specific records from cross-tenant access. Do not allow Red users to query arbitrary evaluation IDs belonging to another user or tenant.
+
+Use database transactions for sensitive round transitions, guess locking, and finalization. Do not expose SQL error messages to the browser.
+
+Store large model files in restricted object/file storage rather than directly in database rows. Store metadata and cryptographic hashes in the database.
+
+Create indexes for frequently filtered event fields, session IDs, timestamps, and model versions.
+
+---
+
+# 16. BACKEND API CONTRACT
+
+Implement typed request and response schemas. Publish the API through FastAPI's OpenAPI interface.
+
+Use a versioned prefix such as `/api/v1`.
+
+Required endpoints include the following. You may adjust the exact route structure if the final design remains consistent, secure, and documented.
+
+## Authentication
+
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/logout`
+- `GET /api/v1/auth/me`
+
+## Dashboard
+
+- `GET /api/v1/dashboard/summary`
+- `GET /api/v1/dashboard/recent-events`
+- `GET /api/v1/dashboard/metrics`
+
+## Model registry
+
+- `GET /api/v1/models`
+- `POST /api/v1/models`
+- `GET /api/v1/models/{model_id}`
+- `POST /api/v1/models/{model_id}/validate`
+- `POST /api/v1/models/{model_id}/health-check`
+- `POST /api/v1/models/import`
+- `POST /api/v1/models/upload`
+- `GET /api/v1/models/{model_id}/versions`
+
+## Evaluations
+
+- `POST /api/v1/evaluations`
+- `GET /api/v1/evaluations`
+- `GET /api/v1/evaluations/{evaluation_id}`
+- `POST /api/v1/evaluations/{evaluation_id}/start`
+- `POST /api/v1/evaluations/{evaluation_id}/cancel`
+- `GET /api/v1/evaluations/{evaluation_id}/results`
+- `GET /api/v1/evaluations/{evaluation_id}/report`
+
+## Red Team
+
+- `POST /api/v1/evaluations/{evaluation_id}/probes`
+- `GET /api/v1/evaluations/{evaluation_id}/red-results`
+- `GET /api/v1/evaluations/{evaluation_id}/probe-budget`
+
+## Blue Team
+
+- `GET /api/v1/blue/policies`
+- `POST /api/v1/blue/policies`
+- `POST /api/v1/blue/policies/{policy_id}/versions`
+- `GET /api/v1/blue/policies/{policy_id}/versions`
+- `POST /api/v1/blue/mitigations`
+- `GET /api/v1/blue/defense-summary`
+
+Every private-policy route must enforce Blue Team or administrator authorization.
+
+## ShadowPolicy
+
+- `POST /api/v1/shadowpolicy/rounds`
+- `GET /api/v1/shadowpolicy/rounds`
+- `GET /api/v1/shadowpolicy/rounds/{round_id}`
+- `POST /api/v1/shadowpolicy/rounds/{round_id}/start`
+- `POST /api/v1/shadowpolicy/rounds/{round_id}/probes`
+- `POST /api/v1/shadowpolicy/rounds/{round_id}/lock-guesses`
+- `POST /api/v1/shadowpolicy/rounds/{round_id}/finalize`
+- `GET /api/v1/shadowpolicy/rounds/{round_id}/results`
+- `POST /api/v1/shadowpolicy/rounds/{round_id}/verify-commitment`
+
+Do not return hidden ground truth through the ordinary round-detail endpoint. Final ground-truth access must be controlled by round state and evaluator/auditor authorization.
+
+## Audit
+
+- `GET /api/v1/audit/events`
+- `GET /api/v1/audit/events/{event_id}`
+- `POST /api/v1/audit/verify`
+- `GET /api/v1/audit/checkpoints`
+- `GET /api/v1/audit/export`
+
+No regular tenant endpoint should provide arbitrary audit deletion or modification.
+
+## Isolation and observability
+
+- `GET /api/v1/security/status`
+- `GET /api/v1/security/isolation-checks`
+- `POST /api/v1/security/isolation-checks/run`
+- `GET /api/v1/security/network-events`
+- `GET /api/v1/security/resource-metrics`
+- `GET /api/v1/security/threat-model`
+
+## Datasets
+
+- `GET /api/v1/datasets/sources`
+- `POST /api/v1/datasets/import`
+- `GET /api/v1/datasets/imports`
+- `GET /api/v1/datasets/imports/{job_id}`
+
+Every endpoint needs schema validation, predictable error responses, authorization, rate limiting where appropriate, and audit logging for security-sensitive actions.
+
+Use appropriate HTTP status codes. Do not expose stack traces or private configuration in error messages.
+
+---
+
+# 17. SECURITY TESTING REQUIREMENTS
+
+Write actual automated tests. A successful build must not depend on manually clicking through the website.
+
+## Backend unit tests
+
+Test:
+
+- Policy input checks.
+- Output canary detection.
+- Model adapter validation.
+- ShadowPolicy scoring formulas.
+- Commitment creation and verification.
+- Audit hash generation and verification.
+- Session ownership checks.
+- Role authorization.
+- Resource quotas.
+- Response normalization.
+- Round finalization and guess locking.
+
+## Integration tests
+
+Test:
+
+1. A normal safe request succeeds through the complete flow.
+2. A synthetic suspicious request is classified according to the configured policy.
+3. A synthetic secret is withheld by output validation.
+4. Red cannot retrieve Blue's private policy.
+5. Blue cannot modify a completed test retroactively.
+6. The model cannot be changed by Red.
+7. Cross-session test state remains separate.
+8. A locked guess cannot be changed after finalization.
+9. A modified audit event causes integrity verification to fail.
+10. A valid audit chain passes verification.
+11. A policy commitment matches its original revealed contents.
+12. A modified policy set fails commitment verification.
+13. Requests outside the probe budget are rejected.
+14. Unauthorized model imports are rejected.
+15. Unexpected model errors do not leak secrets into public responses.
+16. A model or service failure is not mislabeled as a successful defense.
+17. An unauthorized network request is denied by the environment where the configured test is supported.
+
+## Frontend tests
+
+Test login, role-based navigation, model registration, evaluation creation, probe submission, guess locking, results display, audit verification, validation errors, and API failure states.
+
+Use Playwright or an equivalent browser test framework for the most important workflows if available.
+
+## Isolation tests
+
+Add a documented test command that verifies service reachability and access restrictions.
+
+For example, test that Red cannot reach the Blue service directly. Test that the model service is not publicly exposed. Verify that unsupported checks are marked unverified rather than passed.
+
+Tests must be performed in a controlled local or dedicated evaluation environment. Do not run container-escape exploits against third-party or production infrastructure.
+
+---
+
+# 18. METRICS AND EVALUATION METHODOLOGY
+
+Implement metrics using actual recorded test results.
+
+Minimum metrics:
+
+- Number of test cases.
+- Attack detection rate.
+- Attack success rate under the evaluation's defined success criteria.
+- Output canary detection rate.
+- False-positive rate.
+- False-negative rate.
+- P50 latency.
+- P95 latency when sample size permits.
+- Requests blocked.
+- Unauthorized actions denied.
+- Audit-chain verification status.
+- ShadowPolicy precision and recall.
+- Hidden policy inference coverage.
+- Resource-limit events.
+- Cross-session canary test outcomes.
+
+Define the denominator and inclusion criteria for every metric.
+
+For example:
+
+`Detection rate = correctly detected known attack cases / all known attack cases tested`
+
+`False-positive rate = safe cases incorrectly blocked / all safe cases tested`
+
+`Attack success rate = test cases meeting the predefined attack-success condition / eligible attack cases executed`
+
+Document the success criterion before evaluation. A response containing a word or a string alone must not automatically count as an attack success unless the test case explicitly defines it that way.
+
+For each metric, show:
+
+- Number of observations.
+- Numerator and denominator.
+- Data source.
+- Test-suite version.
+- Model and policy versions.
+- Whether the result is measured, calculated, estimated, or simulated.
+
+Never hard-code attractive success percentages into dashboard charts.
+
+If the prototype does not have enough data to calculate a metric reliably, show “Insufficient observations.”
+
+---
+
+# 19. REQUIRED DOCUMENTATION AND DELIVERABLES
+
+Create a complete repository with a clear, modular structure.
+
+A suggested structure:
+
+```text
+bayora/
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   ├── layouts/
+│   │   ├── pages/
+│   │   ├── features/
+│   │   ├── hooks/
+│   │   ├── services/
+│   │   ├── types/
+│   │   └── tests/
+│   ├── package.json
+│   └── Dockerfile
+├── backend/
+│   ├── app/
+│   │   ├── api/
+│   │   ├── auth/
+│   │   ├── controller/
+│   │   ├── red_team/
+│   │   ├── blue_team/
+│   │   ├── models/
+│   │   ├── model_gateway/
+│   │   ├── evaluation/
+│   │   ├── shadowpolicy/
+│   │   ├── audit/
+│   │   ├── sandbox/
+│   │   ├── observability/
+│   │   ├── database/
+│   │   └── schemas/
+│   ├── tests/
+│   ├── migrations/
+│   └── requirements.txt
+├── services/
+│   ├── red-service/
+│   ├── blue-policy-service/
+│   ├── model-gateway/
+│   ├── evaluation-service/
+│   └── audit-collector/
+├── security/
+│   ├── seccomp/
+│   ├── network/
+│   └── threat-model/
+├── datasets/
+│   └── synthetic/
+├── docs/
+│   ├── architecture.md
+│   ├── threat-model.md
+│   ├── api.md
+│   ├── security-controls.md
+│   ├── residual-risks.md
+│   ├── demo-script.md
+│   └── deployment.md
+├── tests/
+├── compose.yaml
+├── .env.example
+├── .gitignore
+├── README.md
+└── LICENSE
+```
+
+Adjust the structure when justified, but preserve logical service boundaries and readable modules.
+
+Create:
+
+1. A complete README with prerequisites and exact setup commands.
+2. An architecture diagram.
+3. A sequence diagram showing a Red prompt moving through the policy engine, model gateway, output validation, and audit collector.
+4. A Docker network diagram.
+5. A threat model.
+6. A table mapping every challenge requirement to the implementation, test, and status.
+7. API documentation.
+8. A model adapter guide.
+9. A dataset import guide.
+10. A security configuration guide.
+11. A residual-risk document.
+12. A test report based on tests that actually ran.
+13. A judge demonstration script.
+14. An `.env.example` with no real credentials.
+15. Database migrations and development seed data.
+
+The documentation must distinguish “implemented and tested,” “implemented but not yet tested,” “simulated,” and “planned.”
+
+---
+
+# 20. DEPLOYMENT AND DEVELOPER EXPERIENCE
+
+The project must be easy to launch.
+
+Provide clear setup steps for:
+
+- Windows with Docker Desktop.
+- Linux with Docker Engine.
+- macOS with Docker Desktop.
+
+Support a development command such as:
+
+`docker compose up --build`
+
+Include health checks and meaningful startup failures. Do not silently mark the app ready while a required database or service is unavailable.
+
+Provide a development mode that uses the mock model without requiring a model download.
+
+Provide an optional profile for a locally hosted model.
+
+If optional model services are not available, explain how to continue the demonstration in mock mode.
+
+Do not require external API keys for the basic end-to-end demo.
+
+Use `.env.example`; do not generate production secrets during source generation. Include a method for creating local development secrets and instructions to rotate them.
+
+Do not mount the host Docker socket into any untrusted service. Do not run untrusted model files as root.
+
+---
+
+# 21. BUILD A JUDGE-READY DEMONSTRATION
+
+Make the entire flow usable in a 5–7 minute demonstration.
+
+Seed a safe synthetic environment.
+
+## Demo sequence
+
+### Step 1: Introduce Bayora
+
+Open the dashboard and show the Red Team, Blue Team, model gateway, controller, audit collector, and security status.
+
+Explain that the platform is evaluating the integrity of the testing environment as well as the model's responses.
+
+### Step 2: Select a model
+
+Choose the mock model or a configured local model.
+
+Show the model's source, version, and validation status.
+
+Clearly indicate if the model is simulated.
+
+### Step 3: Run a normal test
+
+Submit a harmless prompt and demonstrate the permitted request flow.
+
+Show the resulting event IDs and normal response.
+
+### Step 4: Run an adversarial test
+
+Submit a controlled prompt-injection or synthetic secret-disclosure fixture.
+
+Show the input policy decision, model outcome, output check, and final finding.
+
+Explain the difference between a model refusal and a defense-layer block.
+
+### Step 5: Run ShadowPolicy
+
+Start a blind round. Show the public commitment, hidden-policy count, and available probe budget.
+
+Submit a few harmless probes, then lock the guesses.
+
+Finalize the round and verify the commitment.
+
+Show what Red inferred and how accurately it inferred the synthetic policies.
+
+### Step 6: Change the Blue defense
+
+Enable response normalization and rerun a comparable round.
+
+Compare the measurements, explicitly noting whether the difference is based on real observations from the current test run or a simulated demonstration.
+
+### Step 7: Demonstrate audit integrity
+
+Run the audit verifier. Show a successful verification of a valid chain.
+
+In a dedicated test fixture, demonstrate that a deliberately altered audit entry is detected. Do not corrupt the main demo data or silently edit the audit store.
+
+### Step 8: Demonstrate an isolation denial
+
+Run an approved boundary check showing that an unauthorized direct connection or protected-resource request is rejected.
+
+Display the actual verification evidence and the environment in which the check ran.
+
+### Step 9: Finish with the report
+
+Export or view a report showing vulnerabilities, defense outcomes, latency, leakage metrics, audit integrity, and residual risks.
+
+The demonstration must show the system's limitations rather than hide them.
+
+---
+
+# 22. REQUIRED SECURITY GUARANTEES AND LIMITATIONS
+
+Implement controls based on a documented threat model.
+
+At minimum, protect against the following in the scope of the prototype:
+
+- Unauthorized access to Blue Team configuration.
+- Unauthorized model registry modification.
+- Cross-session application-state contamination.
+- Direct access to private services from Red.
+- Arbitrary audit modification through tenant APIs.
+- Oversized and malformed request abuse.
+- Unrestricted use of the model adapter.
+- Unnecessary outbound network access.
+- Unauthorized evaluation-result access.
+- Exposure of provider credentials.
+- Tampering with ShadowPolicy guesses after locking.
+- Alteration of the ShadowPolicy commitment contents.
+
+Explicitly document what is not guaranteed:
+
+- A single Docker host is not the same as physically or hypervisor-isolated infrastructure.
+- Docker containers share a host kernel unless additional isolation layers change the execution boundary.
+- gVisor or seccomp does not, by itself, eliminate every kernel, hardware, timing, or configuration risk.
+- Application-level network diagrams do not prove that firewall rules are enforced.
+- Hash chaining does not prevent a privileged administrator from rewriting all events and recomputing hashes unless an independent trust anchor exists.
+- A policy-inference score only describes the experiment's tested conditions.
+- Regex filters do not detect every jailbreak or prompt injection.
+- Synthetic canary tests do not establish complete protection against all KV-cache or microarchitectural side channels.
+- A health check does not prove the service is secure.
+- A successful model load does not mean its provenance or behavior is trustworthy.
+
+Provide a residual-risk table including threat, current mitigation, test evidence, remaining risk, and next improvement.
+
+Never use “100% secure,” “unhackable,” or “fully immutable” in the interface or presentation unless an independently substantiated guarantee actually supports the wording.
+
+---
+
+# 23. IMPLEMENTATION WORKFLOW FOR THE CODING AGENT
+
+Follow this build order while actually writing and testing the code.
+
+**Phase 1 — Foundation**
+
+Inspect the repository, initialize the frontend and backend, configure the database, create migrations, establish authentication, and implement the dashboard's real API connection.
+
+**Phase 2 — Core evaluation pipeline**
+
+Implement the controller, model adapter abstraction, Red workbench, Blue policy service, input/output policy processing, and end-to-end evaluation records.
+
+**Phase 3 — ShadowPolicy**
+
+Implement hidden synthetic policy storage, commitment creation, probe quotas, response observations, guess locking, finalization, scoring, and commitment verification. Add automated tests before connecting it to a real model.
+
+**Phase 4 — Audit**
+
+Implement structured events, hash chaining, independent audit-service writes, chain verification, and report export.
+
+**Phase 5 — Infrastructure security**
+
+Implement Docker Compose services, network boundaries, non-root execution, restricted capabilities, resource limits, health checks, and configuration verification. Add supported Linux isolation controls and document runtime dependencies.
+
+**Phase 6 — Model registry and import**
+
+Implement mock and local-model registration, health checks, staged uploads, file validation, model metadata, and optional external adapter configuration.
+
+**Phase 7 — Observability and evaluation**
+
+Implement network/authorization event views, resource metrics, cross-session canary tests, test-suite imports, and defensible evaluation calculations.
+
+**Phase 8 — Finish and verify**
+
+Run backend tests, frontend tests, integration tests, and supported container boundary checks. Fix failures. Verify the complete judge demo from a clean start.
+
+Do not leave the core application full of TODO comments, nonfunctional buttons, or fabricated results.
+
+---
+
+# 24. DEFINITION OF DONE
+
+The prototype is complete only when:
+
+- A user can sign in with a role-appropriate account.
+- Each role sees its own permitted interface.
+- Sensitive endpoints enforce authorization on the backend.
+- An administrator can register a mock target model.
+- An optional supported local model can be configured and tested.
+- Red can run an evaluation through the controller.
+- Blue policies can be configured and versioned.
+- The system can demonstrate input filtering and output validation.
+- ShadowPolicy can complete a full blind round.
+- Guess locking, commitment verification, and scoring work.
+- The audit collector records events and detects test tampering.
+- Session identifiers and ownership checks prevent obvious cross-session access.
+- Docker Compose defines distinct services and restricted networks.
+- Supported sandbox settings are tested or explicitly marked unverified.
+- Resource limits and error states are visible.
+- Reports are generated from actual evaluation records.
+- The threat model and residual risks are accessible.
+- The application can run locally using documented commands.
+- The core automated tests pass.
+- The UI contains no fake operational claims or unexplained placeholder controls.
+- All major challenge requirements have an implementation/test/status mapping.
+
+If a security control depends on Linux-only functionality or an environment not available to the coding agent, implement what can be safely supported, create the configuration and verification procedure, and visibly mark the unavailable enforcement as unverified. Do not substitute a simulated status for a real guarantee.
+
+# 25. FINAL INSTRUCTIONS
+
+Build BAYORA for team SYZYGY as a complete software project.
+
+Prioritize functional depth, honest security guarantees, and clear evidence over decorative complexity.
+
+The main product is the secure adversarial AI evaluation platform. ShadowPolicy is its proposed policy-leakage evaluation capability. Both must be clearly represented in the UI and documentation.
+
+Use synthetic fixtures to make the demo work immediately, but design clean interfaces for integrating real models and real infrastructure tests.
+
+Do not ask unnecessary clarification questions. Make reasonable implementation decisions and record them in the README.
+
+When finished, report:
+
+1. What was implemented.
+2. The exact command to run it.
+3. The local URL.
+4. The development demo accounts and how their credentials are configured.
+5. How to execute the automated tests.
+6. Which security checks have actually passed.
+7. Which controls are simulated or unverified.
+8. The known limitations and the next recommended engineering tasks.
+
+Start by inspecting the repository, then begin implementing the application. Do not respond with a plan alone. Deliver the working code and verify the result.

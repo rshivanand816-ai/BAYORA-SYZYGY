@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-dark: #0B1020;
+    --surface-dark: #141C2E;
+    --card-dark: #182238;
+    --border-dark: #233252;
+    --cyan-primary: #44D7F2;
+    --blue-accent: #5599FF;
+    --red-accent: #FF626F;
+    --green-accent: #52D6A0;
+    --yellow-accent: #F1BF62;
+    --text-primary: #E5EAF2;
+    --text-muted: #8FA0BE;
+  }
+
+  body {
+    background-color: #0B1020;
+    color: #E5EAF2;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* Custom scrollbars for security console aesthetic */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0B1020;
+}
+::-webkit-scrollbar-thumb {
+  background: #233252;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #344872;
+}

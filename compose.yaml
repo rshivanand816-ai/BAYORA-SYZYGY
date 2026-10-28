@@ -1,0 +1,681 @@
+# =============================================================================
+# Bayora — split (service-mesh) deployment. Replaces the old two-service
+# `docker-compose.yml`. Nine services:
+#
+#   frontend            nginx serving the built SPA (public ingress)
+#   api-controller      FastAPI controller / auth / API surface
+#   red-service         Red Team adversarial harness
+#   blue-policy-service Blue Team defensive policy engine
+#   model-gateway       model access mediator (no public-internet egress)
+#   evaluation-service  ShadowPolicy + scoring engine
+#   audit-collector     append-only, hash-chained audit store
+#   postgres            the single database host (four logical stores)
+#   ollama              optional local model server (profile: "ollama")
+#
+# SECRETS
+#   No credential is hardcoded here. Every value is interpolated from the
+#   operator-owned `.env` (see `.env.example`) using `${VAR:?message}`; if the
+#   variable is missing, `docker compose` aborts with that message instead of
+#   silently substituting a default secret. `.env` is git-ignored and must
+#   never be committed.
+#
+#   `env_file: .env` is deliberately NOT used on the Bayora services: it would
+#   inject *every* variable of `.env` into each container, handing every
+#   internal service the other services' shared tokens and breaking the
+#   "each service knows only its own token" rule. Compose reads `.env` for
+#   ${VAR} interpolation by default (and honours `--env-file`), so secrets are
+#   injected per-variable below, per service.
+#
+# HARDENING
+#   Every service: non-root uid/gid 10001, read-only root filesystem, tmpfs
+#   for every writable path, all capabilities dropped, no-new-privileges,
+#   pids/cpu/memory limits and a liveness probe. No Docker socket is mounted
+#   anywhere, no service is privileged, no service uses host networking.
+#
+# NETWORK TOPOLOGY
+#   bayora-dmz             (egress)   frontend <-> api-controller
+#   bayora-internal-bus    (internal) api-controller <-> blue-policy-service
+#                                     <-> evaluation-service <-> model-gateway
+#   bayora-eval-net        (internal) api-controller <-> red-service
+#                                     <-> model-gateway
+#   bayora-audit-isolated  (internal) api-controller, evaluation-service
+#                                     -> audit-collector
+#   bayora-db-net          (internal) postgres <-> services holding a DB URL
+#   bayora-model-link      (internal) model-gateway <-> ollama
+#   bayora-model-egress    (egress)   ollama only (weight downloads)
+#
+#   `internal: true` means the network has no route off the host, so the
+#   model-gateway and every internal service have no path to the public
+#   internet. The only egress-capable networks are bayora-dmz (browser
+#   ingress) and bayora-model-egress (the model server, which must be able
+#   to pull weights).
+#
+#   MULTI-NETWORK MEMBERSHIP
+#   The api-controller is the ONLY high-trust component that is allowed to
+#   join several trust domains, and it is deliberately documented as such:
+#   it is the single ingress to the API, it holds every service token, and
+#   it is the only service that legitimately talks to the Red harness, the
+#   Blue engine, the model gateway, the evaluator and the audit collector.
+#   Compromise of the controller is therefore a full compromise of the mesh;
+#   it is the crown jewel, and security/threat-model/README.md carries that
+#   as residual risk R3.
+#
+#   Two other services join more than one network, and both are structural
+#   necessities rather than trust grants:
+#     * model-gateway  -> bayora-internal-bus (the controller dispatches
+#       filtered prompts) + bayora-eval-net (Red is the only party that
+#       actually drives the model) + bayora-model-link (the model server).
+#       It reaches no database and holds no token but its own.
+#     * blue-policy-service / evaluation-service / audit-collector ->
+#       their bus segment + bayora-db-net, because they need the database.
+#       The database segment is internal and contains only postgres and the
+#       services that genuinely hold a database URL.
+#
+#   Red is deliberately NOT attached to bayora-internal-bus and has no route
+#   to postgres.
+#
+# HONEST LIMITATION
+#   bayora-eval-net puts red-service and model-gateway on the same L2
+#   segment, so Docker's network layer alone does NOT stop Red from dialling
+#   the model directly. The application-level token and flow policy is the
+#   current control; host firewall rules are required to close it at L3.
+#   security/network/README.md documents that as a manual operator procedure
+#   which is NOT yet automated.
+# =============================================================================
+
+name: bayora
+
+# -----------------------------------------------------------------------------
+# Shared hardening block.
+#
+# Merge semantics matter:
+#   * mappings (user, read_only, restart, cpus, mem_limit, pids_limit) MERGE
+#   * lists (cap_drop, security_opt, tmpfs) are REPLACED, never merged.
+#     A service needing a different cap_drop or tmpfs set must repeat the
+#     full list in its own block.
+# -----------------------------------------------------------------------------
+x-hardened: &hardened
+  user: "10001:10001"
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  init: true
+  pids_limit: 256
+  cpus: "1.0"
+  mem_limit: 512m
+
+# Every Python service shares the same image and the same base environment.
+x-python-service: &python-service
+  <<: *hardened
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+  image: bayora/backend:1.0.0
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  stop_grace_period: 20s
+
+# Environment common to every Python service. Merged with `<<:` per service
+# and then extended with that service's own secrets.
+x-service-env: &service-env
+  BAYORA_ENV: ${BAYORA_ENV:?BAYORA_ENV must be set in .env (development|test|production)}
+  BAYORA_LOG_LEVEL: ${BAYORA_LOG_LEVEL:-INFO}
+  # session / cookie behaviour
+  BAYORA_COOKIE_NAME: ${BAYORA_COOKIE_NAME:-bayora_session}
+  BAYORA_COOKIE_SECURE: ${BAYORA_COOKIE_SECURE:-true}
+  BAYORA_SESSION_TTL_MINUTES: ${BAYORA_SESSION_TTL_MINUTES:-480}
+  BAYORA_CORS_ORIGINS: ${BAYORA_CORS_ORIGINS:?BAYORA_CORS_ORIGINS must be set in .env}
+  # storage (each service's own volume is mounted at /app/data)
+  BAYORA_DATA_DIR: /app/data
+  BAYORA_QUARANTINE_DIR: /app/data/quarantine
+  # resource governance / rate limits
+  BAYORA_MAX_PROMPT_CHARS: ${BAYORA_MAX_PROMPT_CHARS:-4000}
+  BAYORA_MAX_OUTPUT_CHARS: ${BAYORA_MAX_OUTPUT_CHARS:-4000}
+  BAYORA_MAX_REQUEST_BYTES: ${BAYORA_MAX_REQUEST_BYTES:-65536}
+  BAYORA_MODEL_TIMEOUT_SECONDS: ${BAYORA_MODEL_TIMEOUT_SECONDS:-30}
+  BAYORA_EVAL_CONCURRENCY: ${BAYORA_EVAL_CONCURRENCY:-2}
+  BAYORA_INTERNAL_TIMEOUT_SECONDS: ${BAYORA_INTERNAL_TIMEOUT_SECONDS:-60.0}
+  BAYORA_RATE_LIMIT_PER_MINUTE: ${BAYORA_RATE_LIMIT_PER_MINUTE:-240}
+  BAYORA_LOGIN_RATE_LIMIT_PER_MINUTE: ${BAYORA_LOGIN_RATE_LIMIT_PER_MINUTE:-10}
+  BAYORA_PROBE_RATE_LIMIT_PER_MINUTE: ${BAYORA_PROBE_RATE_LIMIT_PER_MINUTE:-60}
+  BAYORA_MAX_PROBE_BUDGET: ${BAYORA_MAX_PROBE_BUDGET:-200}
+  # model adapters
+  BAYORA_OLLAMA_BASE_URL: ${BAYORA_OLLAMA_BASE_URL:-http://ollama:11434}
+  BAYORA_EXTERNAL_MODELS_ENABLED: ${BAYORA_EXTERNAL_MODELS_ENABLED:-false}
+  BAYORA_EXTERNAL_HOST_ALLOWLIST: ${BAYORA_EXTERNAL_HOST_ALLOWLIST:-}
+  BAYORA_HF_IMPORT_ENABLED: ${BAYORA_HF_IMPORT_ENABLED:-false}
+  BAYORA_HF_API_BASE: ${BAYORA_HF_API_BASE:-https://huggingface.co}
+  # Negative control for the cross-session canary test. NEVER enable outside
+  # of a controlled experiment.
+  BAYORA_MOCK_SHARED_CONTEXT_BUG: ${BAYORA_MOCK_SHARED_CONTEXT_BUG:-false}
+  # audit
+  BAYORA_RETAIN_RAW_PROMPTS: ${BAYORA_RETAIN_RAW_PROMPTS:-true}
+  BAYORA_AUDIT_VERIFY_INTERVAL_SECONDS: ${BAYORA_AUDIT_VERIFY_INTERVAL_SECONDS:-300}
+  # Informational only: the settings model derives the deployment mode from
+  # BAYORA_SERVICE_ROLE and ignores unknown keys.
+  BAYORA_DEPLOYMENT_MODE: ${BAYORA_DEPLOYMENT_MODE:-compose-services}
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Public ingress. Static SPA served by nginx-unprivileged.
+  # Only member of bayora-dmz besides the controller; no database, no tokens.
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: bayora/frontend:1.0.0
+    <<: *hardened
+    # nginx-unprivileged listens on 8080; run it as uid 10001 like the rest.
+    user: "10001:10001"
+    # The unprivileged image is built to run with a read-only root
+    # filesystem: its pid file and every temp path already live under /tmp.
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    # The image's own entrypoint rewrites /etc/nginx/conf.d/*.conf, which is
+    # impossible on a read-only root filesystem, so the entrypoint is dropped
+    # and nginx is started directly.
+    entrypoint: []
+    command: ["nginx", "-g", "daemon off;"]
+    ports:
+      - "8080:8080"
+    networks:
+      - bayora-dmz
+    depends_on:
+      api-controller:
+        condition: service_healthy
+    healthcheck:
+      # The SPA fallback returns index.html for any unmatched path, so this
+      # proves nginx is serving, which is what the probe is for.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # API controller — the single high-trust component.
+  #
+  # It is the only service that joins several trust domains and the only one
+  # that holds more than one service token, because it is the only component
+  # that legitimately talks to every other component. Compromise here is a
+  # full compromise of the mesh.
+  # ---------------------------------------------------------------------------
+  api-controller:
+    <<: *python-service
+    container_name: bayora-api-controller
+    environment:
+      <<: *service-env
+      BAYORA_SERVICE_ROLE: controller
+      # The controller is the only component that calls the other five
+      # services, so it is the only one that holds all five shared tokens.
+      BAYORA_SERVICE_TOKEN_RED: ${BAYORA_SERVICE_TOKEN_RED:?BAYORA_SERVICE_TOKEN_RED must be set in .env}
+      BAYORA_SERVICE_TOKEN_BLUE: ${BAYORA_SERVICE_TOKEN_BLUE:?BAYORA_SERVICE_TOKEN_BLUE must be set in .env}
+      BAYORA_SERVICE_TOKEN_MODEL: ${BAYORA_SERVICE_TOKEN_MODEL:?BAYORA_SERVICE_TOKEN_MODEL must be set in .env}
+      BAYORA_SERVICE_TOKEN_EVAL: ${BAYORA_SERVICE_TOKEN_EVAL:?BAYORA_SERVICE_TOKEN_EVAL must be set in .env}
+      BAYORA_SERVICE_TOKEN_AUDIT: ${BAYORA_SERVICE_TOKEN_AUDIT:?BAYORA_SERVICE_TOKEN_AUDIT must be set in .env}
+      # Service discovery for the mesh.
+      BAYORA_RED_SERVICE_URL: ${BAYORA_RED_SERVICE_URL:?BAYORA_RED_SERVICE_URL must be set in .env}
+      BAYORA_BLUE_SERVICE_URL: ${BAYORA_BLUE_SERVICE_URL:?BAYORA_BLUE_SERVICE_URL must be set in .env}
+      BAYORA_MODEL_GATEWAY_URL: ${BAYORA_MODEL_GATEWAY_URL:?BAYORA_MODEL_GATEWAY_URL must be set in .env}
+      BAYORA_EVALUATION_SERVICE_URL: ${BAYORA_EVALUATION_SERVICE_URL:?BAYORA_EVALUATION_SERVICE_URL must be set in .env}
+      BAYORA_AUDIT_COLLECTOR_URL: ${BAYORA_AUDIT_COLLECTOR_URL:?BAYORA_AUDIT_COLLECTOR_URL must be set in .env}
+      # Controller store (the one store the controller owns).
+      BAYORA_DATABASE_URL: ${BAYORA_DATABASE_URL:?BAYORA_DATABASE_URL must be set in .env}
+      # The current application code still bootstraps all four stores from the
+      # controller process, so the controller additionally holds the policy,
+      # evaluator and audit URLs. Once backend/app is split per service these
+      # three must be removed from here — only then does "one service, one
+      # store" hold at the credential level and not just at the network level.
+      BAYORA_POLICY_DATABASE_URL: ${BAYORA_POLICY_DATABASE_URL:?BAYORA_POLICY_DATABASE_URL must be set in .env}
+      BAYORA_EVALUATOR_DATABASE_URL: ${BAYORA_EVALUATOR_DATABASE_URL:?BAYORA_EVALUATOR_DATABASE_URL must be set in .env}
+      BAYORA_AUDIT_DATABASE_URL: ${BAYORA_AUDIT_DATABASE_URL:?BAYORA_AUDIT_DATABASE_URL must be set in .env}
+      # Demo seed accounts live only in the controller store.
+      BAYORA_SEED_DEMO_USERS: ${BAYORA_SEED_DEMO_USERS:-true}
+      BAYORA_DEMO_ADMIN_PASSWORD: ${BAYORA_DEMO_ADMIN_PASSWORD:?BAYORA_DEMO_ADMIN_PASSWORD must be set in .env}
+      BAYORA_DEMO_RED_PASSWORD: ${BAYORA_DEMO_RED_PASSWORD:?BAYORA_DEMO_RED_PASSWORD must be set in .env}
+      BAYORA_DEMO_RED2_PASSWORD: ${BAYORA_DEMO_RED2_PASSWORD:?BAYORA_DEMO_RED2_PASSWORD must be set in .env}
+      BAYORA_DEMO_BLUE_PASSWORD: ${BAYORA_DEMO_BLUE_PASSWORD:?BAYORA_DEMO_BLUE_PASSWORD must be set in .env}
+      BAYORA_DEMO_AUDITOR_PASSWORD: ${BAYORA_DEMO_AUDITOR_PASSWORD:?BAYORA_DEMO_AUDITOR_PASSWORD must be set in .env}
+      # Checkpoint signing key: shared with the audit-collector only, so the
+      # controller can verify a checkpoint against the collector's anchor.
+      # Both processes write it with O_EXCL on first use, so whichever starts
+      # first creates it and the other loads it; the shared volume makes the
+      # two agree on one key.
+      BAYORA_AUDIT_SIGNING_KEY_PATH: /app/data/audit-keys/ed25519-private.pem
+    volumes:
+      - bayora_controller_data:/app/data
+      # Nested mount: the key lives on its own volume so that it can be
+      # shared with the audit-collector without sharing everything else.
+      - bayora_audit_keys:/app/data/audit-keys
+    ports:
+      # Bound to loopback only: the browser path to the API is the frontend's
+      # /api/ reverse proxy on the DMZ.
+      - "127.0.0.1:8000:8000"
+    networks:
+      - bayora-dmz
+      - bayora-internal-bus
+      - bayora-eval-net
+      - bayora-audit-isolated
+      - bayora-db-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Red Team harness.
+  #
+  # Lives on the eval segment only. It is NOT on bayora-internal-bus and has
+  # NO route to postgres: it gets no database URL at all and keeps its working
+  # set in a local SQLite file on its own volume. Red can talk to the
+  # controller and to the model gateway; nothing else.
+  # ---------------------------------------------------------------------------
+  red-service:
+    <<: *python-service
+    container_name: bayora-red-service
+    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      <<: *service-env
+      BAYORA_SERVICE_ROLE: red-service
+      # The token that guards this service's own API. It is shared with the
+      # controller (the only caller). Red knows no other service token.
+      BAYORA_SERVICE_TOKEN_RED: ${BAYORA_SERVICE_TOKEN_RED:?BAYORA_SERVICE_TOKEN_RED must be set in .env}
+      # No postgres: Red is deliberately denied the database. It has no
+      # route to the database segment and no database credentials at all.
+      #
+      # All four store URLs are pinned to a private SQLite set on Red's own
+      # volume. Pinning all four matters: the application currently
+      # bootstraps every store, and any store left unset would silently fall
+      # back to a local SQLite file in the working directory. Naming them
+      # explicitly keeps the behaviour deliberate instead of accidental.
+      BAYORA_DATABASE_URL: sqlite:////app/data/controller.db
+      BAYORA_POLICY_DATABASE_URL: sqlite:////app/data/policy.db
+      BAYORA_EVALUATOR_DATABASE_URL: sqlite:////app/data/evaluator.db
+      BAYORA_AUDIT_DATABASE_URL: sqlite:////app/data/audit.db
+      BAYORA_RED_SERVICE_URL: ${BAYORA_RED_SERVICE_URL:?BAYORA_RED_SERVICE_URL must be set in .env}
+      BAYORA_MODEL_GATEWAY_URL: ${BAYORA_MODEL_GATEWAY_URL:?BAYORA_MODEL_GATEWAY_URL must be set in .env}
+    volumes:
+      - bayora_red_data:/app/data
+    networks:
+      - bayora-eval-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8001/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Blue Team policy engine.
+  #
+  # Internal bus + database segment. It never touches the eval segment, so
+  # it cannot be reached from the Red harness.
+  # ---------------------------------------------------------------------------
+  blue-policy-service:
+    <<: *python-service
+    container_name: bayora-blue-policy-service
+    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]
+    environment:
+      <<: *service-env
+      BAYORA_SERVICE_ROLE: blue-policy-service
+      BAYORA_SERVICE_TOKEN_BLUE: ${BAYORA_SERVICE_TOKEN_BLUE:?BAYORA_SERVICE_TOKEN_BLUE must be set in .env}
+      # Controller store (user/session lookups) and this service's own store.
+      BAYORA_DATABASE_URL: ${BAYORA_DATABASE_URL:?BAYORA_DATABASE_URL must be set in .env}
+      BAYORA_POLICY_DATABASE_URL: ${BAYORA_POLICY_DATABASE_URL:?BAYORA_POLICY_DATABASE_URL must be set in .env}
+      # The audit store, so policy decisions land in the central chain.
+      BAYORA_AUDIT_DATABASE_URL: ${BAYORA_AUDIT_DATABASE_URL:?BAYORA_AUDIT_DATABASE_URL must be set in .env}
+      # The evaluator store is not this service's business. It is pinned to a
+      # local SQLite file rather than left unset, because an unset store
+      # silently falls back to an implicit default.
+      BAYORA_EVALUATOR_DATABASE_URL: sqlite:////app/data/evaluator.db
+      BAYORA_BLUE_SERVICE_URL: ${BAYORA_BLUE_SERVICE_URL:?BAYORA_BLUE_SERVICE_URL must be set in .env}
+    volumes:
+      - bayora_policy_data:/app/data
+    networks:
+      - bayora-internal-bus
+      - bayora-db-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8002/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Model gateway — the only component that mediates model access.
+  #
+  # It is reachable from the internal bus (the controller) and from the eval
+  # segment (Red), and it reaches the model server over a dedicated internal
+  # link. Every network it sits on is internal, so the gateway has NO route
+  # to the public internet: it cannot pull weights, cannot call a hosted
+  # provider, and cannot exfiltrate a prompt. The model server is the only
+  # component with weight-download egress, and it is not on the internal bus.
+  #
+  # It has no database URL: the gateway keeps no persistent state of its own.
+  # ---------------------------------------------------------------------------
+  model-gateway:
+    <<: *python-service
+    container_name: bayora-model-gateway
+    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8003"]
+    environment:
+      <<: *service-env
+      BAYORA_SERVICE_ROLE: model-gateway
+      BAYORA_SERVICE_TOKEN_MODEL: ${BAYORA_SERVICE_TOKEN_MODEL:?BAYORA_SERVICE_TOKEN_MODEL must be set in .env}
+      # The gateway reads the model registry and the test suites from the
+      # controller store, so it needs that URL. It has no route to postgres
+      # and no credentials for it, so the three stores it does not own are
+      # pinned to a private local SQLite set rather than left to fall back
+      # to an implicit default.
+      BAYORA_DATABASE_URL: ${BAYORA_DATABASE_URL:?BAYORA_DATABASE_URL must be set in .env}
+      BAYORA_POLICY_DATABASE_URL: sqlite:////app/data/policy.db
+      BAYORA_EVALUATOR_DATABASE_URL: sqlite:////app/data/evaluator.db
+      BAYORA_AUDIT_DATABASE_URL: sqlite:////app/data/audit.db
+      BAYORA_MODEL_GATEWAY_URL: ${BAYORA_MODEL_GATEWAY_URL:?BAYORA_MODEL_GATEWAY_URL must be set in .env}
+      BAYORA_OLLAMA_BASE_URL: ${BAYORA_OLLAMA_BASE_URL:-http://ollama:11434}
+    volumes:
+      - bayora_model_data:/app/data
+    networks:
+      - bayora-internal-bus
+      - bayora-eval-net
+      - bayora-model-link
+      # The gateway reads the model registry and the test suites from the
+      # controller store, so it needs the database segment. It holds no
+      # credential for the policy, evaluator or audit stores.
+      - bayora-db-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8003/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Evaluation / ShadowPolicy engine.
+  #
+  # Internal bus + audit segment + database segment. It is a writer on the
+  # audit chain but not a member of the eval segment, so the Red harness
+  # cannot reach it directly.
+  # ---------------------------------------------------------------------------
+  evaluation-service:
+    <<: *python-service
+    container_name: bayora-evaluation-service
+    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004"]
+    environment:
+      <<: *service-env
+      BAYORA_SERVICE_ROLE: evaluation-service
+      BAYORA_SERVICE_TOKEN_EVAL: ${BAYORA_SERVICE_TOKEN_EVAL:?BAYORA_SERVICE_TOKEN_EVAL must be set in .env}
+      BAYORA_DATABASE_URL: ${BAYORA_DATABASE_URL:?BAYORA_DATABASE_URL must be set in .env}
+      BAYORA_EVALUATOR_DATABASE_URL: ${BAYORA_EVALUATOR_DATABASE_URL:?BAYORA_EVALUATOR_DATABASE_URL must be set in .env}
+      BAYORA_AUDIT_DATABASE_URL: ${BAYORA_AUDIT_DATABASE_URL:?BAYORA_AUDIT_DATABASE_URL must be set in .env}
+      # The policy store is not this service's business; pinned to a local
+      # SQLite file rather than left to fall back to an implicit default.
+      BAYORA_POLICY_DATABASE_URL: sqlite:////app/data/policy.db
+      BAYORA_EVALUATION_SERVICE_URL: ${BAYORA_EVALUATION_SERVICE_URL:?BAYORA_EVALUATION_SERVICE_URL must be set in .env}
+      BAYORA_AUDIT_COLLECTOR_URL: ${BAYORA_AUDIT_COLLECTOR_URL:?BAYORA_AUDIT_COLLECTOR_URL must be set in .env}
+    volumes:
+      - bayora_eval_data:/app/data
+    networks:
+      - bayora-internal-bus
+      - bayora-audit-isolated
+      - bayora-db-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8004/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Audit collector — the append-only, hash-chained evidence store.
+  #
+  # On the isolated audit segment and the database segment. It is a sink, not
+  # a source: no other service can make it call anything.
+  #
+  # It holds the Ed25519 checkpoint signing key. The key is a *shared* secret
+  # between the collector and the controller, which is a residual risk: an
+  # administrator who can read the controller's key material and rewrite the
+  # chain can produce a self-consistent forgery. An independent trust anchor
+  # (offline root key, external timestamping, append-only external sink) is
+  # required to close that gap and is documented as future work in
+  # security/threat-model/README.md.
+  # ---------------------------------------------------------------------------
+  audit-collector:
+    <<: *python-service
+    container_name: bayora-audit-collector
+    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8005"]
+    environment:
+      <<: *service-env
+      BAYORA_SERVICE_ROLE: audit-collector
+      BAYORA_SERVICE_TOKEN_AUDIT: ${BAYORA_SERVICE_TOKEN_AUDIT:?BAYORA_SERVICE_TOKEN_AUDIT must be set in .env}
+      BAYORA_DATABASE_URL: ${BAYORA_DATABASE_URL:?BAYORA_DATABASE_URL must be set in .env}
+      BAYORA_AUDIT_DATABASE_URL: ${BAYORA_AUDIT_DATABASE_URL:?BAYORA_AUDIT_DATABASE_URL must be set in .env}
+      # The policy and evaluator stores are not this service's business;
+      # pinned to local SQLite files rather than left to fall back to an
+      # implicit default.
+      BAYORA_POLICY_DATABASE_URL: sqlite:////app/data/policy.db
+      BAYORA_EVALUATOR_DATABASE_URL: sqlite:////app/data/evaluator.db
+      BAYORA_AUDIT_COLLECTOR_URL: ${BAYORA_AUDIT_COLLECTOR_URL:?BAYORA_AUDIT_COLLECTOR_URL must be set in .env}
+      # The private key is generated on first boot with mode 0600 into the
+      # shared key volume. It must be writable, hence a volume and not tmpfs.
+      BAYORA_AUDIT_SIGNING_KEY_PATH: /app/data/audit-keys/ed25519-private.pem
+    volumes:
+      - bayora_audit_data:/app/data
+      - bayora_audit_keys:/app/data/audit-keys
+    networks:
+      - bayora-audit-isolated
+      - bayora-db-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8005/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — the single database host for the four logical stores.
+  #
+  # Reachable only from bayora-db-net, which is internal, so the database is
+  # not reachable from the DMZ, from Red, or from any other container that is
+  # not a member of the database segment.
+  #
+  # The image ships its own uid (999). Running it as 10001 would break the
+  # data-directory ownership check, so the uid is overridden explicitly and
+  # the deviation from the shared 10001 default is deliberate and documented.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: bayora-postgres
+    user: "999:999"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    pids_limit: 256
+    cpus: "2.0"
+    mem_limit: 1g
+    environment:
+      POSTGRES_USER: ${BAYORA_POSTGRES_USER:-bayora}
+      POSTGRES_PASSWORD: ${BAYORA_POSTGRES_PASSWORD:?BAYORA_POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${BAYORA_POSTGRES_DB:-bayora_controller}
+      # Aliases readable by the init script mounted at /docker-entrypoint-initdb.d.
+      BAYORA_POSTGRES_USER: ${BAYORA_POSTGRES_USER:-bayora}
+      BAYORA_POSTGRES_DB: ${BAYORA_POSTGRES_DB:-bayora_controller}
+      # Keep the data directory inside the mounted volume even though the
+      # root filesystem is read-only.
+      PGDATA: /var/lib/postgresql/data/pgdata
+      # The image's own entrypoint writes to these paths; the root filesystem
+      # is read-only, so they are redirected into a writable tmpfs.
+      PGDATA_ROOT: /var/lib/postgresql/data
+      HOME: /tmp
+      TMPDIR: /tmp
+    volumes:
+      - bayora_postgres_data:/var/lib/postgresql/data
+      # Creates the three sibling stores (policy / evaluator / audit) next to
+      # the primary database on first initialisation of the volume.
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+      - /run:rw,noexec,nosuid,size=8m
+      - /var/run/postgresql:uid=999,gid=999,mode=0775
+    networks:
+      - bayora-db-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h 127.0.0.1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Optional local model server (opt-in profile).
+  #
+  #   docker compose --profile ollama up -d
+  #
+  # The model server is the ONLY component with weight-download egress. It
+  # sits on an egress network for that reason and on bayora-model-link so
+  # that only the model gateway can reach it. It is deliberately not on the
+  # internal bus, the eval segment, the audit segment or the database
+  # segment.
+  #
+  # The model volume is owned by root in the published image. Running as
+  # uid 10001 therefore requires a one-time ownership fix on the named
+  # volume (see the note in README and security/network/README.md); until
+  # that is done the model server cannot write weights. The application
+  # detects an unreachable model server and falls back to its simulated
+  # response, so the rest of the stack still starts.
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: bayora-ollama
+    profiles:
+      - ollama
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    pids_limit: 512
+    cpus: "4.0"
+    mem_limit: 8g
+    environment:
+      # HOME must be writable for the server's own key material; the
+      # read-only root filesystem is handled by the tmpfs below.
+      HOME: /tmp
+      OLLAMA_MODELS: /models
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - bayora_ollama_models:/models
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    networks:
+      - bayora-model-link
+      - bayora-model-egress
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+# -----------------------------------------------------------------------------
+# Networks
+#
+# `internal: true` => the bridge has no default route, so containers on it
+# have no path to the public internet and no path to the host. Subnets are
+# pinned to the ranges the application's own topology view expects
+# (bayora-dmz 172.28.0.0/24, bayora-internal-bus 172.28.1.0/24,
+# bayora-eval-net 172.28.2.0/24, bayora-audit-isolated 172.28.3.0/24) so
+# that the operator-facing topology and the container reality agree. Change
+# them here if the host already uses these ranges.
+# -----------------------------------------------------------------------------
+networks:
+  bayora-dmz:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+  bayora-internal-bus:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.1.0/24
+
+  bayora-eval-net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.2.0/24
+
+  bayora-audit-isolated:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.3.0/24
+
+  bayora-db-net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.4.0/24
+
+  # Model server link: model-gateway <-> ollama, no route off the host.
+  bayora-model-link:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.5.0/24
+
+  # The only egress path for weights. The model server only.
+  bayora-model-egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.6.0/24
+
+# -----------------------------------------------------------------------------
+# Named volumes. One per service's working directory so that no service can
+# read another service's on-disk state, plus the shared audit key volume
+# (only the controller and the audit collector mount it).
+# -----------------------------------------------------------------------------
+volumes:
+  bayora_controller_data:
+  bayora_policy_data:
+  bayora_eval_data:
+  bayora_audit_data:
+  bayora_red_data:
+  bayora_model_data:
+  bayora_postgres_data:
+  bayora_ollama_models:
+  bayora_audit_keys:
