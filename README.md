@@ -3,10 +3,10 @@
 
 
 LOGIN PASSWOPRDS---
-ADMIN  ->   username- admin
-             Password-> admin-pass
-RED    -> username - red
-          Password  -> red-pass
+ADMIN  ->   USERNAME-> admin
+             PASSWORD-> admin-pass
+RED    -> USERNAME -> red
+          PASSWORD -> red-pass
 
 
 
